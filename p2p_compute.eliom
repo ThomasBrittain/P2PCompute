@@ -45,13 +45,6 @@
       username = member "username" json_assoc |> to_string
     }
 
-  (* Add some fake users for testing *)
-  let () = add_user {ip_address ="123.32.5.7"; port = "1234"; username = "test_user_1"}
-  let () = add_user {ip_address ="124.31.5.7"; port = "5678"; username = "test_user_2"}
-  let () = add_user {ip_address ="126.62.0.7"; port = "1234"; username = "test_user_3"}
-  let () = add_user {ip_address ="127.37.5.1"; port = "5555"; username = "test_user_4"}
-  let () = add_user {ip_address ="129.32.8.9"; port = "1123"; username = "test_user_5"}
-
 }}
 
 module P2p_compute_app =
