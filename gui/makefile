@@ -7,7 +7,7 @@ all: compile_and_link clear_intermediate_files
 # Compile and link
 compile_and_link:
 > ocamlfind ocamlopt -thread -syntax camlp4o \
-> -package cohttp.lwt,uri,yojson,lwt,lwt.syntax,lwt.unix \
+> -package cohttp.lwt,uri,yojson,lwt,lwt.syntax,lwt.unix,str \
 > -linkpkg -o ClientNode p2p_client.ml
 
 clear_intermediate_files:
