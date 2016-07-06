@@ -106,16 +106,26 @@ module ClientLwtServer = struct
     _process ()
 
   let launch_process () =
-    lwt server_addr = gethostbyname "localhost" in
+    let ic, oc = Unix.open_process "hostname -I" in
+    let ip_info = input_line ic in
+    close_in ic;
+    close_out oc;
+    let internal_ip = Str.split (Str.regexp "[ ]") ip_info |> List.hd in
+    lwt server_addr = gethostbyaddr @@ inet_addr_of_string internal_ip (*"192.168.0.8"*) in
     let sockaddr = ADDR_INET (server_addr.h_addr_list.(0), server_port) in
     let socket = init_socket sockaddr in
     Lwt_main.run (
+      Lwt_io.printl (
+        "Listening for a socket connection on port " ^ (string_of_int server_port) ^
+        " at ip " ^ (string_of_inet_addr server_addr.h_addr_list.(0))) >>
       process
       socket
       ~timeout:so_timeout
       ~callback:
         (fun inchan outchan ->
-          Lwt_io.read_line inchan >>= (fun msg -> Lwt_io.printl msg))
+           Lwt_io.read_line inchan
+           >>= fun msg -> Lwt_io.printl msg
+           >>= Lwt_io.flush_all)
         (*fun inchan outchan ->
           Lwt_io.read_line inchan >>= (fun msg -> Lwt_io.write_line outchan msg)*)
     )
