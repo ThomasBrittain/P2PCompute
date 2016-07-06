@@ -1,4 +1,5 @@
 {shared{
+
   open Eliom_lib
   open Eliom_content
   open Html5.D
@@ -80,8 +81,7 @@ let add_node_fallback =
     ~get_params:Eliom_parameter.unit
     ()
 
-let
-  () =
+let () =
   P2p_compute_app.register
     ~service:add_node_fallback
     (fun () () ->
