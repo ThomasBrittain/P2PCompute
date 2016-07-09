@@ -104,27 +104,57 @@ module ClientLwtServer = struct
   let so_timeout = Some 20
   let backlog = 10
 
-  let temp_file_path = "~/.p2p_compute/"
+  let hidden_file_path = ".p2p_compute"
 
-  (* TODO: Test this thoroughly *)
+  let make_hidden_dir () =
+    try_lwt
+      mkdir hidden_file_path 0o777
+    with
+    | Unix_error (EEXIST, _, _) -> Lwt.return ()
+    | _ -> raise (Failure ("Failed to make directory " ^ hidden_file_path))
+
+  let make_user_dir path =
+    mkdir path 0o777
+
+  let make_result_file path =
+    lwt result_file = openfile (path ^ "result") [O_CREAT; O_TRUNC] 0o777 in
+    close result_file
+
+  let copy_script_file path cr =
+    lwt script_file = openfile (path ^ cr.script_name) [O_WRONLY; O_CREAT] 0o777 in
+    lwt script_write_result = write_string script_file cr.script 0 (String.length cr.script) in
+    close script_file
+
+  let copy_data_file path cr =
+    lwt data_file = openfile (path ^ cr.data_name) [O_WRONLY; O_CREAT] 0o777 in
+    lwt data_write_result = write_string data_file cr.data 0 (String.length cr.data) in
+    close data_file
+
   let run_computation cr_json =
     let cr = compute_request_of_json cr_json in
-    let p = temp_file_path ^ cr.requestor_name ^ "/" in
-    (* Create a temp directory *)
-    mkdir p 0o640 >>
-    (* Write the script and the data to a temp file *)
-    lwt script_file = openfile (p ^ cr.script_name) [O_WRONLY; O_CREAT] 0o640 in
-    lwt script_write_result = write_string script_file cr.script 0 (String.length cr.script) in
-    close script_file >>
-    lwt data_file = openfile (p ^ cr.data_name) [O_WRONLY; O_CREAT] 0o640 in
-    lwt data_write_result = write_string data_file cr.data 0 (String.length cr.data) in
-    close data_file >>
-    (* Execute the script, and send back the results *)
-    let ic, oc = Unix.open_process cr.shell_command in
-    let result = input_line ic in
-    close_in ic;
-    close_out oc;
-    Lwt.return result
+    let p = hidden_file_path ^ "/" ^ cr.requestor_name ^ "/" in
+    make_hidden_dir () >>
+    make_user_dir p >>
+    make_result_file p >>
+    copy_script_file p cr >>
+    copy_data_file p cr >>
+    chdir p >>
+    let cmd = Lwt_process.shell cr.shell_command in
+    lwt p_status = Lwt_process.exec cmd in
+    let exit_status =
+      match p_status with
+      | WEXITED i -> "Process Terminated Normally - Exit status " ^ (string_of_int i)
+      | WSIGNALED _ -> "Process killed by a signal."
+      | WSTOPPED _ -> "Process stopped by a signal."
+    in
+    Lwt.return exit_status
+
+  (* Return the results in the result file if it exists *)
+  let computation_results () = None
+
+  (* TODO: Get computation result and put them into a JSON format *)
+  (* TODO: Send the computation results back to the computation requestor *)
+  (* TODO: Delete everything in the user directory when finished *)
 
   let try_close chan =
     catch (fun () -> Lwt_io.close chan)
@@ -168,6 +198,9 @@ module ClientLwtServer = struct
     Lwt_io.printl (
       "Listening for a socket connection on port " ^ (string_of_int server_port) ^
       " at ip " ^ (string_of_inet_addr server_addr.h_addr_list.(0))) >>
+    (*Gui.username#set_text *)
+    Lwt.return @@ Gui.internal_ip#set_text (string_of_inet_addr server_addr.h_addr_list.(0)) >>
+    Lwt.return @@ Gui.internal_port_ip#set_text (string_of_int server_port) >>
     process
     socket
     ~timeout:so_timeout
@@ -228,3 +261,7 @@ let send_to_all_nodes msg =
   Lwt_list.iter_p
     (fun (u : user) -> send_msg ~ip:u.ip_address ~port:u.port ("Hello from " ^ u.username))
     all_nodes
+
+let main () =
+  Lwt.async ClientLwtServer.launch_process;
+  Gui.main ()
