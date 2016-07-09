@@ -1,12 +1,76 @@
+(* TODO: Try to look up username and port from the last used values stored somewhere *)
+
+open User_info
+
 let () = Lwt_glib.install ~mode:`glib_into_lwt ()
 
 let locale = GtkMain.Main.init ()
 
+let login_window =
+  GWindow.window
+    ~title:"Log in"
+    ~width:500
+    ~height:400
+    ~border_width:20
+    ()
+
+let login_vbox = GPack.vbox ~border_width:2 ~packing:login_window#add ()
+
+let login_table =
+  GPack.table
+    ~rows:3
+    ~columns:2
+    ~row_spacings:5
+    ~col_spacings:5
+    ~border_width:2
+    ~packing:login_vbox#pack
+    ()
+
+let _ =
+  GMisc.label
+    ~markup:"<b>Username</b>"
+    ~packing:(login_table#attach ~left:0 ~top:0 ~right:1 ~bottom:1)
+    ()
+
+let username_field =
+  GEdit.entry
+    ~visibility:true
+    ~max_length:100
+    ~editable:true
+    ~width:100
+    ~height:30
+    ~packing:(login_table#attach ~left:1 ~top:0 ~right:2 ~bottom:1)
+    ()
+
+let _ =
+  GMisc.label
+    ~markup:"<b>Port</b>"
+    ~packing:(login_table#attach ~left:0 ~top:1 ~right:1 ~bottom:2)
+    ()
+
+let port_field =
+  GEdit.entry
+    ~visibility:true
+    ~max_length:100
+    ~editable:true
+    ~width:100
+    ~height:30
+    ~packing:(login_table#attach ~left:1 ~top:1 ~right:2 ~bottom:2)
+    ()
+
+let login_submit_btn =
+  GButton.button
+    ~label:"Log In"
+    ~packing:(login_table#attach ~left:0 ~top:2 ~right:2 ~bottom:3)
+    ~show:true
+    ()
+
+(* Main Window Section *)
 let window =
   GWindow.window
     ~title:"P2P Compute"
     ~width:500
-    ~height:800
+    ~height:400
     ~border_width:20
     ()
 
@@ -44,7 +108,7 @@ let _ =
 
 let username =
   GMisc.label
-    ~text:"username_goes_here"
+    ~text:(User_info).!my_node.username
     ~packing:(client_info_table#attach ~left:1 ~top:0 ~right:2 ~bottom:1)
     ()
 
@@ -54,7 +118,7 @@ let internal_ip =
     ~packing:(client_info_table#attach ~left:1 ~top:1 ~right:2 ~bottom:2)
     ()
 
-let internal_port_ip =
+let internal_port =
   GMisc.label
     ~text:"internal_port_goes_here"
     ~packing:(client_info_table#attach ~left:1 ~top:2 ~right:2 ~bottom:3)
@@ -65,8 +129,9 @@ let main () =
   let waiter, wakener = Lwt.wait () in
 
   (* Kill the process when the user clicks the "X" button in top left corner *)
+  (* TODO: This only kills the gui process, but it needs to kill all Lwt processes! *)
   let _ = window#connect#destroy ~callback:GMain.Main.quit in
 
-  window#show ();
+  login_window#show ();
 
   waiter
