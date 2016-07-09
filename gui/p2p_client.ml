@@ -24,6 +24,11 @@ type compute_request = {
   data : string;
 }
 
+type compute_result = {
+  result : string;
+  exit_status : string;
+}
+
 let my_node : user ref = ref {
   ip_address = "";
   port = "";
@@ -131,7 +136,7 @@ module ClientLwtServer = struct
     close data_file
 
   let run_computation cr_json =
-    let cr = compute_request_of_json cr_json in
+    let cr = compute_request_of_json @@ Yojson.Basic.from_string cr_json in
     let p = hidden_file_path ^ "/" ^ cr.requestor_name ^ "/" in
     make_hidden_dir () >>
     make_user_dir p >>
@@ -150,7 +155,21 @@ module ClientLwtServer = struct
     Lwt.return exit_status
 
   (* Return the results in the result file if it exists *)
-  let computation_results () = None
+  let computation_result cr_json () =
+    let open Lwt_io in
+    lwt exit_status = run_computation cr_json in
+    lwt ic = open_file ~mode:Input "result" in
+    let rec read_all ?(result = "") () =
+      try
+        lwt new_line = read_line ic in
+        read_all ~result:(result ^ new_line) ()
+      with
+        | End_of_file -> close ic >|= fun () -> result
+    in
+    lwt result = read_all () in
+    Lwt.return @@
+    "{\"result\" : " ^ result ^ "," ^
+     "\"exit_status\" : " ^ exit_status ^ "}"
 
   (* TODO: Get computation result and put them into a JSON format *)
   (* TODO: Send the computation results back to the computation requestor *)
@@ -204,13 +223,15 @@ module ClientLwtServer = struct
     process
     socket
     ~timeout:so_timeout
-    ~callback:
-      (fun inchan outchan ->
-          Lwt_io.read_line inchan
-          >>= fun msg -> Lwt_io.printl msg
-          >>= Lwt_io.flush_all)
-      (*fun inchan outchan ->
-        Lwt_io.read_line inchan >>= (fun msg -> Lwt_io.write_line outchan msg)*)
+    ~callback: (
+      fun inchan outchan ->
+        Lwt_io.read_line inchan
+        >>= fun msg -> Lwt_io.printl msg
+        >>= Lwt_io.flush_all
+        >>= computation_result msg
+        >>= Lwt_io.printl
+        >>= Lwt_io.flush_all
+    )
 
 end
 
