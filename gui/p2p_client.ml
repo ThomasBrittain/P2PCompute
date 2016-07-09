@@ -15,6 +15,7 @@ type user = {
 }
 
 (* NOTE: Simple set up for testing counting words in a string *)
+(* TODO: Instead of sending a json request, send a file with all necessary info *)
 type compute_request = {
   requestor_name : string;
   shell_command : string;
@@ -55,10 +56,11 @@ let json_of_compute_request c =
    "\"script_name\" : \"" ^ c.script_name ^ "\", " ^
    "\"script\" : \"" ^ c.script ^ "\", " ^
    "\"data_name\" : \"" ^ c.data_name ^ "\", " ^
-   "\"data\" : \"" ^ c.data ^ "\", " ^
+   "\"data\" : \"" ^ c.data ^ "\"" ^
   "}"
 
 let compute_request_of_json json_assoc =
+  print_string "compute_request_of_json called";
   let open Yojson.Basic.Util in
   {
     requestor_name = member "requestor_name" json_assoc |> to_string;
@@ -135,8 +137,19 @@ module ClientLwtServer = struct
     lwt data_write_result = write_string data_file cr.data 0 (String.length cr.data) in
     close data_file
 
+  let rec read_all ?(result = "") ic () =
+    Lwt_io.printl "read_all called" >>= Lwt_io.flush_all >>
+    let open Lwt_io in
+    try_lwt
+      lwt new_line = read_line ic in
+      read_all ~result:(result ^ new_line) ic ()
+    with
+      | End_of_file -> close ic >|= fun () -> result
+
   let run_computation cr_json =
+    Lwt_io.printl "Entered run_computation" >>= Lwt_io.flush_all >>
     let cr = compute_request_of_json @@ Yojson.Basic.from_string cr_json in
+    Lwt_io.printl "Json parsed!" >>= Lwt_io.flush_all >>
     let p = hidden_file_path ^ "/" ^ cr.requestor_name ^ "/" in
     make_hidden_dir () >>
     make_user_dir p >>
@@ -152,21 +165,17 @@ module ClientLwtServer = struct
       | WSIGNALED _ -> "Process killed by a signal."
       | WSTOPPED _ -> "Process stopped by a signal."
     in
+    Lwt_io.printl "run_computatin is complete" >>= Lwt_io.flush_all >>
     Lwt.return exit_status
 
   (* Return the results in the result file if it exists *)
   let computation_result cr_json () =
     let open Lwt_io in
     lwt exit_status = run_computation cr_json in
+    Lwt_io.print exit_status >>=
+    Lwt_io.flush_all >>
     lwt ic = open_file ~mode:Input "result" in
-    let rec read_all ?(result = "") () =
-      try
-        lwt new_line = read_line ic in
-        read_all ~result:(result ^ new_line) ()
-      with
-        | End_of_file -> close ic >|= fun () -> result
-    in
-    lwt result = read_all () in
+    lwt result = read_all ic () in
     Lwt.return @@
     "{\"result\" : " ^ result ^ "," ^
      "\"exit_status\" : " ^ exit_status ^ "}"
@@ -193,13 +202,14 @@ module ClientLwtServer = struct
         (fun (socket_cli, _) ->
           let inchan = Lwt_io.of_fd ~mode:Lwt_io.input socket_cli in
           let outchan = Lwt_io.of_fd ~mode:Lwt_io.output socket_cli in
-          let c = callback inchan outchan in
+          (*let c = callback inchan outchan in
           let events =
             match timeout with
             | None -> [c]
             | Some t -> [c; sleep (float_of_int t) >> return ()]
-          in
-          ignore (Lwt.pick events >> try_close outchan >> try_close inchan);
+            in
+            ignore (Lwt.pick events >> try_close outchan >> try_close inchan);*)
+          callback inchan outchan >>
           _process ()
         )
     in
@@ -225,12 +235,10 @@ module ClientLwtServer = struct
     ~timeout:so_timeout
     ~callback: (
       fun inchan outchan ->
-        Lwt_io.read_line inchan
-        >>= fun msg -> Lwt_io.printl msg
-        >>= Lwt_io.flush_all
-        >>= computation_result msg
-        >>= Lwt_io.printl
-        >>= Lwt_io.flush_all
+        lwt msg = read_all inchan () in
+        Lwt_io.printl msg >>= Lwt_io.flush_all >>
+        computation_result msg ()
+        >>= Lwt_io.printl >>= Lwt_io.flush_all
     )
 
 end
