@@ -1,21 +1,12 @@
 (* TODO: Detect a client disconnect *)
 
-(* TODO: Send a group of words to the raspberry pi, and ocaml code to calculate the count of words, then return the data back *)
-
 let server_api = "http://localhost:8080/"
 
 open Lwt.Infix
+open User_info
 
 let (>>) = fun x y -> (x >>= fun _ -> y)
 
-type user = {
-  ip_address : string;
-  port : string;
-  username : string
-}
-
-(* NOTE: Simple set up for testing counting words in a string *)
-(* TODO: Instead of sending a json request, send a file with all necessary info *)
 type compute_request = {
   requestor_name : string;
   shell_command : string;
@@ -28,12 +19,6 @@ type compute_request = {
 type compute_result = {
   result : string;
   exit_status : string;
-}
-
-let my_node : user ref = ref {
-  ip_address = "";
-  port = "";
-  username =""
 }
 
 let json_of_user u =
@@ -107,21 +92,25 @@ module ClientLwtServer = struct
   open Unix
   open Lwt_unix
 
-  let server_port = 12345
   let so_timeout = Some 20
   let backlog = 10
 
   let hidden_file_path = ".p2p_compute"
 
+  (* TODO: Consolidate these two mkdir functions into a single function *)
   let make_hidden_dir () =
     try_lwt
       mkdir hidden_file_path 0o777
     with
-    | Unix_error (EEXIST, _, _) -> Lwt.return ()
+    | Unix_error (EEXIST, _, _) -> Lwt.return_unit
     | _ -> raise (Failure ("Failed to make directory " ^ hidden_file_path))
 
   let make_user_dir path =
-    mkdir path 0o777
+    try_lwt
+      mkdir path 0o777
+    with
+    | Unix_error (EEXIST, _, _) -> Lwt.return_unit
+    | _ -> raise (Failure ("Failed to make directory" ^ path))
 
   let make_result_file path =
     lwt result_file = openfile (path ^ "result") [O_CREAT; O_TRUNC] 0o777 in
@@ -180,9 +169,13 @@ module ClientLwtServer = struct
     "{\"result\" : " ^ result ^ "," ^
      "\"exit_status\" : " ^ exit_status ^ "}"
 
-  (* TODO: Get computation result and put them into a JSON format *)
   (* TODO: Send the computation results back to the computation requestor *)
   (* TODO: Delete everything in the user directory when finished *)
+  (* TODO:
+     User Clicks Gui Button "Run Computation" with form filled out
+     --> send the computation to another computer
+     --> receive all results from ClientLwtServer then wait to receive the results
+  *)
 
   let try_close chan =
     catch (fun () -> Lwt_io.close chan)
@@ -216,20 +209,19 @@ module ClientLwtServer = struct
     _process ()
 
   let launch_process () =
+    let port = int_of_string (User_info).!my_node.port in
     let ic, oc = Unix.open_process "hostname -I" in
     let ip_info = input_line ic in
     close_in ic;
     close_out oc;
     let internal_ip = Str.split (Str.regexp "[ ]") ip_info |> List.hd in
     lwt server_addr = gethostbyaddr @@ inet_addr_of_string internal_ip in
-    let sockaddr = ADDR_INET (server_addr.h_addr_list.(0), server_port) in
+    let sockaddr = ADDR_INET (server_addr.h_addr_list.(0), port) in
     let socket = init_socket sockaddr in
     Lwt_io.printl (
-      "Listening for a socket connection on port " ^ (string_of_int server_port) ^
+      "Listening for a socket connection on port " ^ (string_of_int port) ^
       " at ip " ^ (string_of_inet_addr server_addr.h_addr_list.(0))) >>
-    (*Gui.username#set_text *)
     Lwt.return @@ Gui.internal_ip#set_text (string_of_inet_addr server_addr.h_addr_list.(0)) >>
-    Lwt.return @@ Gui.internal_port_ip#set_text (string_of_int server_port) >>
     process
     socket
     ~timeout:so_timeout
@@ -251,8 +243,9 @@ module ClientMsgSendLocalhost = struct
   lwt hentry = gethostbyname "localhost"
 
   let send_msg msg =
+    let port = int_of_string (User_info).!my_node.port in
     let client_sock = socket PF_INET SOCK_STREAM 0 in
-    connect client_sock (ADDR_INET (hentry.h_addr_list.(0), ClientLwtServer.server_port))
+    connect client_sock (ADDR_INET (hentry.h_addr_list.(0), port))
     >>= fun () -> send client_sock (Bytes.of_string msg) 0 (String.length msg) []
     >>= fun _ -> close client_sock
 
@@ -280,17 +273,8 @@ end
 (* Send a message to all other nodes *)
 let send_to_all_nodes msg =
   let open ClientToClient in
-  my_node := {
-    ip_address = "";
-    port = "1234";
-    username ="system76"
-  };
   register_node !my_node >>
   lwt all_nodes = get_all_nodes () in
   Lwt_list.iter_p
     (fun (u : user) -> send_msg ~ip:u.ip_address ~port:u.port ("Hello from " ^ u.username))
     all_nodes
-
-let main () =
-  Lwt.async ClientLwtServer.launch_process;
-  Gui.main ()
