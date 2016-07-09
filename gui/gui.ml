@@ -64,8 +64,9 @@ let main () =
 
   let waiter, wakener = Lwt.wait () in
 
-  (* Kill the process when the user clicks the "X" button in top left cornet*)
+  (* Kill the process when the user clicks the "X" button in top left corner *)
   let _ = window#connect#destroy ~callback:GMain.Main.quit in
 
   window#show ();
+
   waiter
