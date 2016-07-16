@@ -77,6 +77,12 @@ let window =
 (* VBox to hold the client info *)
 let client_info_vbox = GPack.vbox ~border_width:2 ~packing:window#add ()
 
+(* Main Window Menubar*)
+let mb = GMenu.menu_bar ~packing:client_info_vbox#pack ()
+let mb_factory = new GMenu.factory mb
+let mb_accel_group = mb_factory#accel_group
+let mb_file_menu = mb_factory#add_submenu "Item Goes Here"
+
 (* Display the client's Username, IP and port *)
 let client_info_table =
   GPack.table
@@ -130,7 +136,8 @@ let main () =
 
   (* Kill the process when the user clicks the "X" button in top left corner *)
   (* TODO: This only kills the gui process, but it needs to kill all Lwt processes! *)
-  let _ = window#connect#destroy ~callback:GMain.Main.quit in
+  (*let _ = window#connect#destroy ~callback:GMain.Main.quit in*)
+  ignore (window#connect#destroy (Lwt.wakeup wakener));
 
   login_window#show ();
 
