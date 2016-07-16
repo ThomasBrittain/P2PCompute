@@ -1,4 +1,6 @@
 (* TODO: Detect a client disconnect *)
+(* TODO: After a node has finished a computation, need to be able to tell if it was               *)
+(*       successfully received by the requestor or if it should be saved and re-sent again later *)
 
 let server_api = "http://localhost:8080/"
 
@@ -7,18 +9,47 @@ open User_info
 
 let (>>) = fun x y -> (x >>= fun _ -> y)
 
+(* Data type for sending a computation request to another node *)
 type compute_request = {
   requestor_name : string;
+  requestor_ip : string;
+  requestor_port: string;
+  job_name : string;
+  packet_num : int;
   shell_command : string;
   script_name : string;
   script : string;
   data_name : string;
-  data : string;
+  data : string
 }
 
+(* Data type for returning a computation result to another node *)
 type compute_result = {
+  job_name : string;
+  job_created_at : float;
+  packet_num : int;
+  total_packets : int;
   result : string;
-  exit_status : string;
+  exit_status : string
+}
+
+type client_msg =
+  | ComputeReq of compute_request
+  | ComputeRes of compute_result
+
+(* Descrptive data about a computation made by the client *)
+type job_info = {
+  job_name : string;
+  total_packets : int;
+  packets_complete : int;
+  created_at : float
+}
+
+(* Descriptive data about a single job that has been sent/received to/from another node *)
+type job = {
+  complete : bool;
+  completed_by : user option;
+  completed_at : float
 }
 
 let json_of_user u =
@@ -45,16 +76,58 @@ let json_of_compute_request c =
   "}"
 
 let compute_request_of_json json_assoc =
-  print_string "compute_request_of_json called";
   let open Yojson.Basic.Util in
   {
     requestor_name = member "requestor_name" json_assoc |> to_string;
+    requestor_ip = member "requestor_ip" json_assoc |> to_string;
+    requestor_port = member "requestor_port" json_assoc |> to_string;
+    job_name = member "job_name" json_assoc |> to_string;
+    packet_num = member "packet_num" json_assoc |> to_int;
     shell_command = member "shell_command" json_assoc |> to_string;
     script_name = member "script_name" json_assoc |> to_string;
     script = member "script" json_assoc |> to_string;
     data_name = member "data_name" json_assoc |> to_string;
     data = member "data" json_assoc |> to_string
   }
+
+let compute_result_of_json json_assoc =
+  let open Yojson.Basic.Util in
+  {
+    job_name = member "job_name" json_assoc |> to_string;
+    job_created_at = member "job_created_at" json_assoc |> to_float;
+    packet_num = member "packet_num" json_assoc |> to_int;
+    total_packets = member "total_packets" json_assoc |> to_int;
+    result = member "result" json_assoc |> to_string;
+    exit_status = member "exit_status" json_assoc |> to_string
+  }
+
+let json_of_job_info (j : job_info) =
+  "{\"job_name\" : \"" ^ j.job_name ^ "\", " ^
+   "\"total_packets\" : \"" ^ (string_of_int j.total_packets) ^ "\"" ^
+   "\"packets_complete\" : \"" ^ (string_of_int j.packets_complete) ^ "\"" ^
+   "\"created_at\" : \"" ^ (string_of_float j.created_at) ^ "\"" ^
+  "}"
+
+let job_info_of_json json_assoc =
+  let open Yojson.Basic.Util in
+  {
+    job_name = member "job_name" json_assoc |> to_string;
+    total_packets = member "total_packets" json_assoc |> to_int;
+    packets_complete = member "packets_complete" json_assoc |> to_int;
+    created_at = member "created_at" json_assoc |> to_float;
+  }
+
+let client_msg_of_string s =
+  let open Yojson.Basic in
+  let json_assoc = from_string s in
+  try
+    let first_key = Util.to_assoc json_assoc |> List.hd |> fst in
+    match first_key with
+    | "requestor_name" -> ComputeReq (compute_request_of_json json_assoc)
+    | "result" -> ComputeRes (compute_result_of_json json_assoc)
+    | _ -> raise (Failure "invalid json")
+  with
+  | _ -> raise (Failure "invalid json")
 
 (* Get request *)
 let get_it path =
@@ -86,6 +159,20 @@ let get_all_nodes () =
 let register_node u =
   post_it ~body:(json_of_user u) "add_node"
 
+(* Communication between client nodes *)
+module ClientToClient = struct
+
+  open Lwt_unix
+
+  let send_msg ~ip ~port msg =
+    lwt hentry = gethostbyaddr @@ Unix.inet_addr_of_string ip in
+    let client_sock = socket PF_INET SOCK_STREAM 0 in
+    connect client_sock (ADDR_INET (hentry.h_addr_list.(0), int_of_string @@ port))
+    >>= fun () -> send client_sock (Bytes.of_string msg) 0 (String.length msg) []
+    >>= fun _ -> close client_sock
+
+end
+
 module ClientLwtServer = struct
 
   open Lwt
@@ -97,15 +184,7 @@ module ClientLwtServer = struct
 
   let hidden_file_path = ".p2p_compute"
 
-  (* TODO: Consolidate these two mkdir functions into a single function *)
-  let make_hidden_dir () =
-    try_lwt
-      mkdir hidden_file_path 0o777
-    with
-    | Unix_error (EEXIST, _, _) -> Lwt.return_unit
-    | _ -> raise (Failure ("Failed to make directory " ^ hidden_file_path))
-
-  let make_user_dir path =
+  let make_dir path =
     try_lwt
       mkdir path 0o777
     with
@@ -116,6 +195,7 @@ module ClientLwtServer = struct
     lwt result_file = openfile (path ^ "result") [O_CREAT; O_TRUNC] 0o777 in
     close result_file
 
+  (* TODO: Combine copy_script_file and copy_data_file into a single directory *)
   let copy_script_file path cr =
     lwt script_file = openfile (path ^ cr.script_name) [O_WRONLY; O_CREAT] 0o777 in
     lwt script_write_result = write_string script_file cr.script 0 (String.length cr.script) in
@@ -126,6 +206,11 @@ module ClientLwtServer = struct
     lwt data_write_result = write_string data_file cr.data 0 (String.length cr.data) in
     close data_file
 
+  let write_to_file ~path s =
+    lwt file_handle = openfile path [O_WRONLY; O_CREAT] 0o777 in
+    lwt _ = write_string file_handle s 0 (String.length s) in
+    close file_handle
+
   let rec read_all ?(result = "") ic () =
     Lwt_io.printl "read_all called" >>= Lwt_io.flush_all >>
     let open Lwt_io in
@@ -133,19 +218,80 @@ module ClientLwtServer = struct
       lwt new_line = read_line ic in
       read_all ~result:(result ^ new_line) ic ()
     with
-      | End_of_file -> close ic >|= fun () -> result
+    | End_of_file -> close ic >|= fun () -> result
+
+  let rec dir_contents ?(contents = []) dir_ic =
+    try_lwt
+      lwt e = readdir dir_ic in
+      dir_contents ~contents:(e :: contents) dir_ic
+    with
+    | End_of_file -> closedir dir_ic >> Lwt.return contents
+
+  let create_job_info_file job_info =
+    let job_dir = job_info.job_name ^ "_" ^ (string_of_float job_info.created_at) ^ ".json" in
+    write_to_file
+      ~path:(hidden_file_path ^ "/jobs/" ^ job_dir ^ "/job_info.json")
+      (json_of_job_info job_info)
+
+  let returned_packets (cpt_res : compute_result) =
+    let path =
+      hidden_file_path ^ "/jobs/" ^ cpt_res.job_name ^ "_" ^
+      (string_of_float cpt_res.job_created_at) ^ "/results"
+    in
+    lwt dir = opendir path in
+    lwt dir_files = dir_contents dir in
+    List.filter
+      (fun s -> Str.string_match (Str.regexp "results_packet_[1-9][0-9]*.json") s 0)
+      dir_files
+  |> List.length |> Lwt.return
+
+  (* Update a job info file based on the data already stored *)
+  let update_job_info_file (cpt_res : compute_result) =
+    (* check if the file exists, if not, the create the file *)
+    let path = hidden_file_path ^ "/jobs/" ^ cpt_res.job_name  ^ ".json" in
+    try_lwt
+      lwt ic = Lwt_io.open_file ~mode:Lwt_io.Input path in
+      lwt job_info_json =
+        read_all ic ()
+        >|= Yojson.Basic.from_string
+        >|= job_info_of_json
+      in
+      lwt oc =
+        Lwt_io.open_file ~flags:[O_WRONLY; O_CREAT; O_TRUNC] ~perm:0o777 ~mode:Lwt_io.Output path
+      in
+      lwt pkts = returned_packets cpt_res in
+      let new_file_data =
+        Lwt_stream.of_string @@ json_of_job_info {
+          job_name = cpt_res.job_name;
+          total_packets = cpt_res.total_packets;
+          packets_complete = pkts;
+          created_at = cpt_res.job_created_at
+        }
+      in
+      Lwt_io.write_chars oc new_file_data >>
+      Lwt_io.flush oc >>
+      Lwt_io.close oc
+    with
+    | Unix_error (ENOENT, _, _) ->
+      create_job_info_file {
+        job_name = cpt_res.job_name;
+        total_packets = cpt_res.total_packets;
+        packets_complete = 1;
+        created_at = Unix.time ()
+      }
 
   let run_computation cr_json =
     Lwt_io.printl "Entered run_computation" >>= Lwt_io.flush_all >>
     let cr = compute_request_of_json @@ Yojson.Basic.from_string cr_json in
     Lwt_io.printl "Json parsed!" >>= Lwt_io.flush_all >>
     let p = hidden_file_path ^ "/" ^ cr.requestor_name ^ "/" in
-    make_hidden_dir () >>
-    make_user_dir p >>
+    make_dir hidden_file_path >>
+    make_dir p >>
     make_result_file p >>
     copy_script_file p cr >>
     copy_data_file p cr >>
     chdir p >>
+    (* TODO: Add ability to disable the process' networking and all access to other file *)
     let cmd = Lwt_process.shell cr.shell_command in
     lwt p_status = Lwt_process.exec cmd in
     let exit_status =
@@ -167,7 +313,21 @@ module ClientLwtServer = struct
     lwt result = read_all ic () in
     Lwt.return @@
     "{\"result\" : " ^ result ^ "," ^
-     "\"exit_status\" : " ^ exit_status ^ "}"
+    "\"exit_status\" : " ^ exit_status ^ "}"
+
+  (* Store the result of a computation returned from another node *)
+  let store_computation_result (cpt_res : compute_result) =
+    (* TODO: Check if all packets have been returned and update the job info file accordingly *)
+    make_dir hidden_file_path >>
+    make_dir (hidden_file_path ^ "/jobs") >>
+    make_dir (hidden_file_path ^ "/jobs/" ^ cpt_res.job_name) >>
+    (* TODO: Create the job info file and write its contents *)
+    make_dir (hidden_file_path ^ "/jobs/" ^ cpt_res.job_name ^ "/results") >>
+    let result_path =
+      hidden_file_path ^ "/jobs/" ^ cpt_res.job_name ^
+      "/results/" ^ (string_of_int cpt_res.packet_num)
+    in
+    write_to_file ~path:result_path cpt_res.result
 
   (* TODO: Send the computation results back to the computation requestor *)
   (* TODO: Delete everything in the user directory when finished *)
@@ -229,8 +389,11 @@ module ClientLwtServer = struct
       fun inchan outchan ->
         lwt msg = read_all inchan () in
         Lwt_io.printl msg >>= Lwt_io.flush_all >>
-        computation_result msg ()
-        >>= Lwt_io.printl >>= Lwt_io.flush_all
+        match client_msg_of_string msg with
+        | ComputeReq cr ->
+          computation_result msg ()
+          >>= ClientToClient.send_msg ~ip:cr.requestor_ip ~port:cr.requestor_port
+        | ComputeRes cr -> store_computation_result cr
     )
 
 end
@@ -253,20 +416,6 @@ module ClientMsgSendLocalhost = struct
     Lwt_io.read_line Lwt_io.stdin
     >>= send_msg
     >>= chat
-
-end
-
-(* Communication between client nodes *)
-module ClientToClient = struct
-
-  open Lwt_unix
-
-  let send_msg ~ip ~port msg =
-    lwt hentry = gethostbyaddr @@ Unix.inet_addr_of_string ip in
-    let client_sock = socket PF_INET SOCK_STREAM 0 in
-    connect client_sock (ADDR_INET (hentry.h_addr_list.(0), int_of_string @@ port))
-    >>= fun () -> send client_sock (Bytes.of_string msg) 0 (String.length msg) []
-    >>= fun _ -> close client_sock
 
 end
 
